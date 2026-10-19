@@ -30,14 +30,15 @@ namespace TaskManagerGuardAgent
         public string Publisher;          // Authenticode signer, or "(unsigned)"
         public bool SignatureValid;
         public string Sha256;
+        public string HeldReason;
         public DateTime StartedUtc = DateTime.UtcNow;
-        public VirusTotalVerdict VT = new VirusTotalVerdict();
 
         /// <summary>Everything published about this task, as shown in the prompt
         /// and details views (without the VirusTotal line).</summary>
         public string BuildDetailsText()
         {
             return
+                "Held reason: " + (string.IsNullOrEmpty(HeldReason) ? "released by policy" : HeldReason) + Environment.NewLine +
                 "Executable : " + (string.IsNullOrEmpty(ExePath) ? "(unknown path)" : ExePath) + Environment.NewLine +
                 "Publisher  : " + Publisher + (SignatureValid ? "  [signature valid]" :
                     (Publisher == "(unsigned)" ? "  [NOT SIGNED]" : "  [SIGNATURE INVALID]")) + Environment.NewLine +
@@ -51,6 +52,7 @@ namespace TaskManagerGuardAgent
                 "Command    : " + (string.IsNullOrEmpty(CommandLine) ? "(not captured)" : CommandLine) + Environment.NewLine +
                 "SHA-256    : " + (string.IsNullOrEmpty(Sha256) ? "(unavailable)" : Sha256);
         }
+        public VirusTotalVerdict VT = new VirusTotalVerdict();
     }
 
     public class VirusTotalVerdict
@@ -92,12 +94,17 @@ namespace TaskManagerGuardAgent
         private static extern uint NtResumeProcess(IntPtr hProcess);
 
         // ---------- events ----------
-        /// <summary>Raised on the UI thread whenever a new (suspended) process needs a decision.</summary>
-        public event Action<ProcessEventInfo> PromptRequired;
+        /// <summary>Raised (background thread) when a process is frozen awaiting a decision.</summary>
+        public event Action<ProcessEventInfo> HeldAdded;
+        /// <summary>Raised (background thread) after a decision was applied to a held process.</summary>
+        public event Action<ProcessEventInfo, string> HeldRemoved;
         /// <summary>Log lines for the main window.</summary>
         public event Action<string> Log;
         /// <summary>Fired when a decision has been applied (info, decision string).</summary>
         public event Action<ProcessEventInfo, string> DecisionApplied;
+
+        /// <summary>Processes currently frozen, awaiting a user decision.</summary>
+        public readonly ConcurrentDictionary<int, ProcessEventInfo> HeldProcesses = new();
 
         /// <summary>Public logging hook so forms can write to the log too.</summary>
         public void WriteLog(string message) => Log?.Invoke(message);
@@ -106,9 +113,7 @@ namespace TaskManagerGuardAgent
         private ManagementEventWatcher _wmiWatcher;
         private System.Threading.Timer _pollTimer;
         private HashSet<int> _knownPids = new HashSet<int>();
-        private readonly ConcurrentQueue<ProcessEventInfo> _queue = new();
         private CancellationTokenSource _cts = new();
-        private Task _pumpTask;
         private Task _vtTask;
         private bool _running;
         private readonly int _ownPid = Environment.ProcessId;
@@ -152,10 +157,7 @@ namespace TaskManagerGuardAgent
             if (!UsingWmiTrace)
                 _pollTimer = new System.Threading.Timer(PollCallback, null, 1000, 1000);
 
-            // Queue pump: one prompt at a time, in order.
-            _pumpTask = Task.Run(() => PumpLoop(_cts.Token));
-
-            // VirusTotal lookup worker: enriches queued items while the user reads the dialog.
+            // VirusTotal lookup worker: enriches held items while the user reads the dialog.
             _vtTask = Task.Run(() => VtLoop(_cts.Token));
         }
 
@@ -169,6 +171,13 @@ namespace TaskManagerGuardAgent
             try { _pollTimer?.Dispose(); } catch { }
             _pollTimer = null;
             _knownPids.Clear();
+
+            // Never leave processes frozen behind us.
+            foreach (var h in HeldProcesses.Values)
+            {
+                try { Resume(h.Pid); } catch { }
+            }
+            HeldProcesses.Clear();
             Log?.Invoke("Monitoring stopped.");
         }
 
@@ -230,7 +239,7 @@ namespace TaskManagerGuardAgent
             // agent every minute; the fresh copy must reach its single-instance mutex
             // check (and exit silently) instead of being frozen here by the running copy.
             // Before this fix a relaunch was suspended before Main() ever ran, so frozen
-            // second copies piled up in Task Manager no matter what the mutex allowed.
+            // second copies piled up in Task Manager.
             if (!string.IsNullOrEmpty(exePath) && _ownExePath.Length > 0 &&
                 string.Equals(exePath, _ownExePath, StringComparison.OrdinalIgnoreCase))
             {
@@ -312,28 +321,17 @@ namespace TaskManagerGuardAgent
                 return;
             }
 
-            _queue.Enqueue(info);
-            Log?.Invoke($"Held new process for review: {info.Name} ({pid})");
-        }
+            info.HeldReason = string.IsNullOrEmpty(info.ExePath)
+                ? "executable path not accessible"
+                : info.SignatureValid
+                    ? "command line not captured"
+                    : info.Publisher == "(unsigned)"
+                        ? "file is not digitally signed"
+                        : "signature failed verification";
 
-        private void PumpLoop(CancellationToken ct)
-        {
-            while (!ct.IsCancellationRequested)
-            {
-                try
-                {
-                    if (_queue.TryDequeue(out var info))
-                    {
-                        PromptRequired?.Invoke(info);
-                    }
-                    else
-                    {
-                        ct.WaitHandle.WaitOne(200);
-                    }
-                }
-                catch (ObjectDisposedException) { break; }
-                catch (OperationCanceledException) { break; }
-            }
+            HeldProcesses[pid] = info;
+            Log?.Invoke($"Held {info.Name} ({pid}) - reason: {info.HeldReason}");
+            HeldAdded?.Invoke(info);
         }
 
         private void VtLoop(CancellationToken ct)
@@ -342,7 +340,10 @@ namespace TaskManagerGuardAgent
             {
                 try
                 {
-                    if (_queue.TryPeek(out var info) && !info.VT.Completed && !info.VT.Started)
+                    var info = HeldProcesses.Values
+                        .OrderBy(h => h.StartedUtc)
+                        .FirstOrDefault(h => !h.VT.Completed && !h.VT.Started);
+                    if (info != null)
                     {
                         if (string.IsNullOrEmpty(_config.VirusTotalApiKey))
                         {
@@ -372,32 +373,53 @@ namespace TaskManagerGuardAgent
             }
         }
 
-        // ---------- decisions (called by the UI after OK/Cancel) ----------
-        public void Allow(ProcessEventInfo info)
+        // ---------- decisions (called by the UI after OK/Cancel or main-window buttons) ----------
+        /// <summary>Applies an Allow/Block decision to a held process. The same decision
+        /// is applied to every currently-held instance of the same file, so a program
+        /// that spawned many copies (browsers do this constantly) is resolved in one
+        /// answer. remember=true persists the decision for future launches.</summary>
+        public void Decide(ProcessEventInfo info, bool allow, bool remember)
         {
-            Resume(info.Pid);
-            DecisionApplied?.Invoke(info, "Allowed by user");
+            if (info == null || !HeldProcesses.TryRemove(info.Pid, out _))
+                return; // already decided elsewhere - never decide twice
+
+            // find sibling instances of the same executable currently held
+            var group = HeldProcesses.Values.Where(h =>
+                (!string.IsNullOrEmpty(info.Sha256) && h.Sha256 == info.Sha256) ||
+                (!string.IsNullOrEmpty(info.ExePath) &&
+                 string.Equals(h.ExePath, info.ExePath, StringComparison.OrdinalIgnoreCase))).ToList();
+
+            string decision = allow
+                ? (remember ? "Allowed by user (always)" : "Allowed by user")
+                : (remember ? "Blocked by user (always)" : "Blocked by user");
+
+            ApplyDecision(info, allow, remember);
+
+            foreach (var sibling in group)
+            {
+                if (HeldProcesses.TryRemove(sibling.Pid, out _))
+                    ApplyDecision(sibling, allow, remember);
+            }
         }
 
-        public void AllowAlways(ProcessEventInfo info)
+        private void ApplyDecision(ProcessEventInfo h, bool allow, bool remember)
         {
-            _config.AllowPath(info.ExePath);
-            if (!string.IsNullOrEmpty(info.Sha256)) _config.AllowHash(info.Sha256);
-            Resume(info.Pid);
-            DecisionApplied?.Invoke(info, "Allowed by user (always for this file)");
-        }
-
-        public void Block(ProcessEventInfo info)
-        {
-            Kill(info.Pid);
-            _config.BlockPath(info.ExePath);
-            DecisionApplied?.Invoke(info, "Blocked by user");
-        }
-
-        public void BlockOnce(ProcessEventInfo info)
-        {
-            Kill(info.Pid);
-            DecisionApplied?.Invoke(info, "Blocked by user");
+            if (allow)
+            {
+                if (remember)
+                {
+                    _config.AllowPath(h.ExePath);
+                    if (!string.IsNullOrEmpty(h.Sha256)) _config.AllowHash(h.Sha256);
+                }
+                Resume(h.Pid);
+            }
+            else
+            {
+                if (remember) _config.BlockPath(h.ExePath);
+                Kill(h.Pid);
+            }
+            DecisionApplied?.Invoke(h, allow ? "Allowed" : "Blocked");
+            HeldRemoved?.Invoke(h, allow ? "unblocked" : "blocked");
         }
 
         // ---------- helpers ----------

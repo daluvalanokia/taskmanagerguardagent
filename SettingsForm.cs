@@ -21,7 +21,9 @@ namespace TaskManagerGuardAgent
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             StartPosition = FormStartPosition.Manual;
-            ClientSize = new Size(540, 192);
+            ClientSize = new Size(540, 240);
+            var wa = Screen.PrimaryScreen.WorkingArea;
+            Location = new Point(wa.Right - Width - 30, wa.Bottom - Height - 60);
 
             var lblKey = new Label
             {
@@ -31,7 +33,7 @@ namespace TaskManagerGuardAgent
             };
             _txtApiKey = new TextBox
             {
-                Location = new Point(12, 30),
+                Location = new Point(12, 34),
                 Size = new Size(516, 23),
                 UseSystemPasswordChar = true,
                 Text = _config.VirusTotalApiKey

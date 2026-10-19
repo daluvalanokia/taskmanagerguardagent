@@ -4,9 +4,9 @@ using System.Windows.Forms;
 
 namespace TaskManagerGuardAgent
 {
-    /// <summary>The permission dialog shown when a new process is being held.
-    /// OK = release the process onto the CPU, Cancel = keep it blocked (killed).
-    /// Pinned to the bottom-right corner with a reduced height.</summary>
+    /// <summary>The permission dialog for a held process. OK = release it onto the
+    /// CPU, Cancel = keep it blocked (killed). Shown non-modally so the main window
+    /// stays usable while the dialog is open.</summary>
     public class PromptForm : Form
     {
         private readonly GuardEngine _engine;
@@ -21,11 +21,12 @@ namespace TaskManagerGuardAgent
         private TextBox _txtDetails;
         private Button _btnOk;
         private Button _btnCancel;
-        private Button _btnAlways;
         private Label _lblVt;
         private LinkLabel _lnkVt;
         private Label _lblCountdown;
         private CheckBox _chkAlways;
+
+        public ProcessEventInfo Info => _info;
 
         public PromptForm(GuardEngine engine, ProcessEventInfo info, Config config)
         {
@@ -42,6 +43,7 @@ namespace TaskManagerGuardAgent
                 _countdown.Tick += OnCountdownTick;
                 _countdown.Start();
             }
+            else _countdown = null;
 
             // Poll for the VirusTotal result arriving from the worker thread.
             _vtPoll = new System.Windows.Forms.Timer { Interval = 500 };
@@ -62,6 +64,12 @@ namespace TaskManagerGuardAgent
             _vtPoll.Start();
         }
 
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            Activate();
+        }
+
         private void BuildUi()
         {
             Text = "TaskManager Guard - Permission Required";
@@ -71,19 +79,20 @@ namespace TaskManagerGuardAgent
             StartPosition = FormStartPosition.Manual;
             TopMost = true;
             ShowInTaskbar = true;
-            ClientSize = new Size(560, 404);
+            ClientSize = new Size(560, 400);
 
+            // Bottom-right corner of the working area (above the taskbar).
             var wa = Screen.PrimaryScreen.WorkingArea;
-            Location = new Point(wa.Right - Width - 12, wa.Bottom - Height - 12);
+            Location = new Point(wa.Right - Width - 10, wa.Bottom - Height - 10);
 
             _lblTitle = new Label
             {
                 Text = $"A new process was blocked and held:\n{_info.Name}  (PID {_info.Pid})",
-                Font = new Font("Segoe UI", 11F, FontStyle.Bold),
+                Font = new Font("Segoe UI", 10.5F, FontStyle.Bold),
                 AutoSize = false,
                 Width = 540,
-                Height = 44,
-                Location = new Point(12, 12)
+                Height = 40,
+                Location = new Point(12, 10)
             };
 
             _txtDetails = new TextBox
@@ -91,8 +100,8 @@ namespace TaskManagerGuardAgent
                 Multiline = true,
                 ReadOnly = true,
                 ScrollBars = ScrollBars.Vertical,
-                Location = new Point(12, 60),
-                Size = new Size(536, 200),
+                Location = new Point(12, 54),
+                Size = new Size(536, 210),
                 Font = new Font("Consolas", 9F)
             };
             _txtDetails.Text = _info.BuildDetailsText();
@@ -101,7 +110,7 @@ namespace TaskManagerGuardAgent
             {
                 Text = "Checking with VirusTotal...",
                 AutoSize = true,
-                Location = new Point(12, 266),
+                Location = new Point(12, 270),
                 Font = new Font("Segoe UI", 9F)
             };
 
@@ -109,7 +118,7 @@ namespace TaskManagerGuardAgent
             {
                 Text = "",
                 AutoSize = true,
-                Location = new Point(12, 286),
+                Location = new Point(12, 289),
                 Visible = false
             };
             _lnkVt.LinkClicked += (s, e) =>
@@ -120,39 +129,26 @@ namespace TaskManagerGuardAgent
 
             _chkAlways = new CheckBox
             {
-                Text = "Remember this decision for this file (allow always)",
+                Text = "Remember this decision for this file",
                 AutoSize = true,
-                Location = new Point(12, 308)
+                Location = new Point(12, 312)
             };
 
             _btnOk = new Button
             {
                 Text = "OK - Allow to run",
-                DialogResult = DialogResult.None,
-                Size = new Size(160, 34),
+                Size = new Size(150, 32),
                 Location = new Point(12, 340)
             };
-            _btnOk.Click += (s, e) => Decide(true);
-
-            _btnAlways = new Button
-            {
-                Text = "Allow (always)",
-                Size = new Size(120, 34),
-                Location = new Point(180, 340)
-            };
-            _btnAlways.Click += (s, e) => DecideAlways(true);
+            _btnOk.Click += (s, e) => Decide(true, _chkAlways.Checked);
 
             _btnCancel = new Button
             {
                 Text = "Cancel - Keep blocked",
-                Size = new Size(160, 34),
-                Location = new Point(308, 340)
+                Size = new Size(150, 32),
+                Location = new Point(168, 340)
             };
-            _btnCancel.Click += (s, e) =>
-            {
-                if (_chkAlways.Checked) DecideAlways(false);
-                else Decide(false);
-            };
+            _btnCancel.Click += (s, e) => Decide(false, _chkAlways.Checked);
 
             _lblCountdown = new Label
             {
@@ -160,7 +156,7 @@ namespace TaskManagerGuardAgent
                     ? $"Auto-block in {_secondsLeft}s"
                     : "",
                 AutoSize = true,
-                Location = new Point(12, 380),
+                Location = new Point(330, 348),
                 Font = new Font("Segoe UI", 8.25F),
                 ForeColor = Color.Firebrick
             };
@@ -170,7 +166,7 @@ namespace TaskManagerGuardAgent
 
             Controls.AddRange(new Control[] {
                 _lblTitle, _txtDetails, _lblVt, _lnkVt, _chkAlways,
-                _btnOk, _btnAlways, _btnCancel, _lblCountdown
+                _btnOk, _btnCancel, _lblCountdown
             });
         }
 
@@ -181,37 +177,23 @@ namespace TaskManagerGuardAgent
             if (_secondsLeft <= 0)
             {
                 _countdown?.Stop();
-                if (!_decided) Decide(false, auto: true);
+                if (!_decided)
+                {
+                    _engine.WriteLog($"Auto-blocked after timeout: {_info.Name} ({_info.Pid})");
+                    Decide(false, remember: false);
+                }
             }
         }
 
-        private void Decide(bool allow, bool auto = false)
+        private void Decide(bool allow, bool remember)
         {
             if (_decided) return;
             _decided = true;
             _countdown?.Stop();
             _vtPoll?.Stop();
 
-            if (allow) _engine.Allow(_info);
-            else _engine.BlockOnce(_info);
+            _engine.Decide(_info, allow, remember);
 
-            if (auto) _engine.WriteLog($"Auto-blocked after timeout: {_info.Name} ({_info.Pid})");
-
-            DialogResult = DialogResult.OK; // either way the prompt is resolved
-            Close();
-        }
-
-        private void DecideAlways(bool allow)
-        {
-            if (_decided) return;
-            _decided = true;
-            _countdown?.Stop();
-            _vtPoll?.Stop();
-
-            if (allow) _engine.AllowAlways(_info);
-            else _engine.Block(_info);
-
-            DialogResult = DialogResult.OK;
             Close();
         }
 
@@ -221,8 +203,7 @@ namespace TaskManagerGuardAgent
             base.OnFormClosing(e);
             if (!_decided)
             {
-                Decide(false, auto: true);
-                e.Cancel = false;
+                Decide(false, remember: false);
             }
         }
 

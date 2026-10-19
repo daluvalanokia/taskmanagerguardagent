@@ -97,11 +97,10 @@ namespace TaskManagerGuardAgent
 
         public bool IsBlockedPath(string exePath)
         {
-            return !string.IsNullOrEmpty(exePath) &&
-                BlocklistPaths.Contains(exePath.ToLowerInvariant());
+            if (string.IsNullOrEmpty(exePath)) return false;
+            return BlocklistPaths.Contains(exePath.ToLowerInvariant());
         }
 
-        /// <summary>Removes the path from the permanent block list (an "unblock").</summary>
         public void UnblockPath(string exePath)
         {
             if (string.IsNullOrEmpty(exePath)) return;

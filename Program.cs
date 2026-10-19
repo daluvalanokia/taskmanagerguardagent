@@ -16,8 +16,15 @@ namespace TaskManagerGuardAgent
             _singleInstanceMutex = new Mutex(true, @"Global\TaskManagerGuardAgent_SingleInstance", out createdNew);
             if (!createdNew)
             {
-                // The auto-restart watchdog relaunches us every minute; if an instance
-                // is already alive we exit silently so there is never a second process.
+                // Single process: only one instance is ever allowed to run. Ask the
+                // live instance to show its window, then exit immediately.
+                try
+                {
+                    using var signal = EventWaitHandle.OpenExisting(@"Global\TaskManagerGuardAgent_ShowSignal");
+                    signal.Set();
+                }
+                catch { }
+                _singleInstanceMutex.Dispose();
                 return;
             }
 
