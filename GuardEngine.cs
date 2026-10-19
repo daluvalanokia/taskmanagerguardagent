@@ -32,6 +32,25 @@ namespace TaskManagerGuardAgent
         public string Sha256;
         public DateTime StartedUtc = DateTime.UtcNow;
         public VirusTotalVerdict VT = new VirusTotalVerdict();
+
+        /// <summary>Everything published about this task, as shown in the prompt
+        /// and details views (without the VirusTotal line).</summary>
+        public string BuildDetailsText()
+        {
+            return
+                "Executable : " + (string.IsNullOrEmpty(ExePath) ? "(unknown path)" : ExePath) + Environment.NewLine +
+                "Publisher  : " + Publisher + (SignatureValid ? "  [signature valid]" :
+                    (Publisher == "(unsigned)" ? "  [NOT SIGNED]" : "  [SIGNATURE INVALID]")) + Environment.NewLine +
+                "Version    : " + (string.IsNullOrEmpty(FileVersion) ? "(none)" : FileVersion) + Environment.NewLine +
+                "Company    : " + (string.IsNullOrEmpty(CompanyName) ? "(none)" : CompanyName) + Environment.NewLine +
+                "Description: " + (string.IsNullOrEmpty(FileDescription) ? "(none)" : FileDescription) + Environment.NewLine +
+                "Requested source:" + Environment.NewLine +
+                "   Parent  : " + (string.IsNullOrEmpty(ParentName)
+                    ? "(parent already exited)"
+                    : $"{ParentName} (PID {ParentPid})" + (string.IsNullOrEmpty(ParentPath) ? "" : Environment.NewLine + "   " + ParentPath)) + Environment.NewLine +
+                "Command    : " + (string.IsNullOrEmpty(CommandLine) ? "(not captured)" : CommandLine) + Environment.NewLine +
+                "SHA-256    : " + (string.IsNullOrEmpty(Sha256) ? "(unavailable)" : Sha256);
+        }
     }
 
     public class VirusTotalVerdict
@@ -93,6 +112,7 @@ namespace TaskManagerGuardAgent
         private Task _vtTask;
         private bool _running;
         private readonly int _ownPid = Environment.ProcessId;
+        private readonly string _ownExePath = Environment.ProcessPath ?? "";
 
         public bool UsingWmiTrace { get; private set; }
         public bool IsRunning => _running;
@@ -204,6 +224,17 @@ namespace TaskManagerGuardAgent
                 exePath = GetProcessImagePath(pid);
                 if (!string.IsNullOrEmpty(exePath)) break;
                 Thread.Sleep(50);
+            }
+
+            // Never guard our own executable. The auto-restart watchdog relaunches the
+            // agent every minute; the fresh copy must reach its single-instance mutex
+            // check (and exit silently) instead of being frozen here by the running copy.
+            // Before this fix a relaunch was suspended before Main() ever ran, so frozen
+            // second copies piled up in Task Manager no matter what the mutex allowed.
+            if (!string.IsNullOrEmpty(exePath) && _ownExePath.Length > 0 &&
+                string.Equals(exePath, _ownExePath, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
             }
 
             var info = new ProcessEventInfo

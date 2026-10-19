@@ -5,7 +5,8 @@ using System.Windows.Forms;
 namespace TaskManagerGuardAgent
 {
     /// <summary>The permission dialog shown when a new process is being held.
-    /// OK = release the process onto the CPU, Cancel = keep it blocked (killed).</summary>
+    /// OK = release the process onto the CPU, Cancel = keep it blocked (killed).
+    /// Pinned to the bottom-right corner with a reduced height.</summary>
     public class PromptForm : Form
     {
         private readonly GuardEngine _engine;
@@ -67,10 +68,13 @@ namespace TaskManagerGuardAgent
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             MinimizeBox = false;
-            StartPosition = FormStartPosition.CenterScreen;
+            StartPosition = FormStartPosition.Manual;
             TopMost = true;
             ShowInTaskbar = true;
-            ClientSize = new Size(560, 470);
+            ClientSize = new Size(560, 404);
+
+            var wa = Screen.PrimaryScreen.WorkingArea;
+            Location = new Point(wa.Right - Width - 12, wa.Bottom - Height - 12);
 
             _lblTitle = new Label
             {
@@ -88,28 +92,16 @@ namespace TaskManagerGuardAgent
                 ReadOnly = true,
                 ScrollBars = ScrollBars.Vertical,
                 Location = new Point(12, 60),
-                Size = new Size(536, 240),
+                Size = new Size(536, 200),
                 Font = new Font("Consolas", 9F)
             };
-            _txtDetails.Text =
-                "Executable : " + (string.IsNullOrEmpty(_info.ExePath) ? "(unknown path)" : _info.ExePath) + Environment.NewLine +
-                "Publisher  : " + _info.Publisher + (_info.SignatureValid ? "  [signature valid]" :
-                    (_info.Publisher == "(unsigned)" ? "  [NOT SIGNED]" : "  [SIGNATURE INVALID]")) + Environment.NewLine +
-                "Version    : " + (string.IsNullOrEmpty(_info.FileVersion) ? "(none)" : _info.FileVersion) + Environment.NewLine +
-                "Company    : " + (string.IsNullOrEmpty(_info.CompanyName) ? "(none)" : _info.CompanyName) + Environment.NewLine +
-                "Description: " + (string.IsNullOrEmpty(_info.FileDescription) ? "(none)" : _info.FileDescription) + Environment.NewLine +
-                "Requested source:" + Environment.NewLine +
-                "   Parent  : " + (string.IsNullOrEmpty(_info.ParentName)
-                    ? "(parent already exited)"
-                    : $"{_info.ParentName} (PID {_info.ParentPid})" + (string.IsNullOrEmpty(_info.ParentPath) ? "" : Environment.NewLine + "   " + _info.ParentPath)) + Environment.NewLine +
-                "Command    : " + (string.IsNullOrEmpty(_info.CommandLine) ? "(not captured)" : _info.CommandLine) + Environment.NewLine +
-                "SHA-256    : " + (string.IsNullOrEmpty(_info.Sha256) ? "(unavailable)" : _info.Sha256);
+            _txtDetails.Text = _info.BuildDetailsText();
 
             _lblVt = new Label
             {
                 Text = "Checking with VirusTotal...",
                 AutoSize = true,
-                Location = new Point(12, 308),
+                Location = new Point(12, 266),
                 Font = new Font("Segoe UI", 9F)
             };
 
@@ -117,7 +109,7 @@ namespace TaskManagerGuardAgent
             {
                 Text = "",
                 AutoSize = true,
-                Location = new Point(12, 328),
+                Location = new Point(12, 286),
                 Visible = false
             };
             _lnkVt.LinkClicked += (s, e) =>
@@ -130,7 +122,7 @@ namespace TaskManagerGuardAgent
             {
                 Text = "Remember this decision for this file (allow always)",
                 AutoSize = true,
-                Location = new Point(12, 356)
+                Location = new Point(12, 308)
             };
 
             _btnOk = new Button
@@ -138,7 +130,7 @@ namespace TaskManagerGuardAgent
                 Text = "OK - Allow to run",
                 DialogResult = DialogResult.None,
                 Size = new Size(160, 34),
-                Location = new Point(12, 392)
+                Location = new Point(12, 340)
             };
             _btnOk.Click += (s, e) => Decide(true);
 
@@ -146,7 +138,7 @@ namespace TaskManagerGuardAgent
             {
                 Text = "Allow (always)",
                 Size = new Size(120, 34),
-                Location = new Point(180, 392)
+                Location = new Point(180, 340)
             };
             _btnAlways.Click += (s, e) => DecideAlways(true);
 
@@ -154,7 +146,7 @@ namespace TaskManagerGuardAgent
             {
                 Text = "Cancel - Keep blocked",
                 Size = new Size(160, 34),
-                Location = new Point(308, 392)
+                Location = new Point(308, 340)
             };
             _btnCancel.Click += (s, e) =>
             {
@@ -168,7 +160,7 @@ namespace TaskManagerGuardAgent
                     ? $"Auto-block in {_secondsLeft}s"
                     : "",
                 AutoSize = true,
-                Location = new Point(12, 432),
+                Location = new Point(12, 380),
                 Font = new Font("Segoe UI", 8.25F),
                 ForeColor = Color.Firebrick
             };

@@ -34,6 +34,14 @@ until you allow it.
 - **VirusTotal v3 integration** (free API key) for hash validation against
   70+ antivirus engines, with a link to the full report.
 - **Allow-list / block-list** with "always" decisions, persisted across restarts.
+- **Agent window task management**: double-click (or right-click) any task row in the
+  agent window to view the published details of that task and to *Allow always*,
+  *Block always* or *Unblock* (remove from block list) the file. The block list is
+  checked before the signature auto-release, so a blocked file stays blocked until
+  you unblock it - even if its signature is valid.
+- **Self-guard fix**: the engine never freezes its own executable, so the watchdog's
+  per-minute relaunch always reaches its single-instance mutex and exits silently
+  (previously the running copy suspended the new copy before it could check the mutex).
 - **Auto-block countdown** (default 45 s) so unattended prompts never hang forever.
 
 ## Requirements

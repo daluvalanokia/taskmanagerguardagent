@@ -94,5 +94,19 @@ namespace TaskManagerGuardAgent
             if (!BlocklistPaths.Contains(p)) BlocklistPaths.Add(p);
             Save();
         }
+
+        public bool IsBlockedPath(string exePath)
+        {
+            return !string.IsNullOrEmpty(exePath) &&
+                BlocklistPaths.Contains(exePath.ToLowerInvariant());
+        }
+
+        /// <summary>Removes the path from the permanent block list (an "unblock").</summary>
+        public void UnblockPath(string exePath)
+        {
+            if (string.IsNullOrEmpty(exePath)) return;
+            BlocklistPaths.Remove(exePath.ToLowerInvariant());
+            Save();
+        }
     }
 }
